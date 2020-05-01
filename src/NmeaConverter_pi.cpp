@@ -28,8 +28,9 @@
 
 
 #include <wx/tokenzr.h>
+#include <algorithm>    // std::max
 #include "NmeaConverter_pi.h"
-
+#include "icons.h"
 
 extern "C" DECL_EXP opencpn_plugin* create_pi(void *ppimgr)
 {
@@ -39,6 +40,12 @@ extern "C" DECL_EXP opencpn_plugin* create_pi(void *ppimgr)
 extern "C" DECL_EXP void destroy_pi(opencpn_plugin* p)
 {
     delete p;
+}
+
+NmeaConverter_pi::NmeaConverter_pi(void *ppimgr):opencpn_plugin_18(ppimgr)
+{
+          // Create the PlugIn icons
+      initialize_images();
 }
 
 int NmeaConverter_pi::Init(void)
@@ -87,13 +94,21 @@ wxString NmeaConverter_pi::GetCommonName()
 
 wxString NmeaConverter_pi::GetShortDescription()
 {
-      return _("NmeaConverter_pi");
+      return _("Plugin for manipulating nmea sentences");
 }
 
 wxString NmeaConverter_pi::GetLongDescription()
 {
-      return _("NmeaConverter_pi.");
+      return _T("Plugin for manipulating nmea sentences.\n\
+Cherry picking from existing sentences, calculate new data with\n\
+spreadsheet like formulas or just plain send  new sentences.\n\
+Not easy, although it is easy to make errors and crash OpenCPN");
 
+}
+
+wxBitmap *NmeaConverter_pi::GetPlugInBitmap()
+{
+      return _img_nmeaconverter_pi;
 }
 
 void NmeaConverter_pi::SetNMEASentence(wxString &sentence)
@@ -326,7 +341,7 @@ wxArrayString nmeaSendObj::FindStartWithDollarSubSets(wxString FormatStr, wxStri
     wxArrayString ReturnArray;
 
     {
-        while ( (FormatStr.find( wxT("$"), startpos ) != wxNOT_FOUND) &&( startpos < FormatStr.Length() ))
+        while ( (FormatStr.find( wxT("$"), startpos ) != (size_t)wxNOT_FOUND) &&( startpos < FormatStr.Length() ))
         {
             startpos = FormatStr.find( wxT("$"), startpos );
             size_t i = startpos;
@@ -421,32 +436,56 @@ void nmeaSendObj::ComputeOutputSentence()
     for (int j=1 ; j < (int)formattokenarray.GetCount(); j++)
     {
         // find max number of decimals so we can set the output later to the right amount of needed decimals.
-        int NoOfDecimals = 0;
-        int IinString = 0;
+        size_t NoOfDecimals = 0;
+        size_t NoOfDigits = 0;
+        size_t IinString = 0;
+        bool IsValidNumber= true;
         wxString s=formattokenarray[j];
-        while ( s.find( _("."), IinString) != (size_t)wxNOT_FOUND )
-        {
-            IinString = s.find( _("."), IinString);
-            int n=0;
-            while ( (IinString + 1 < (int)s.Len() ) &
-                    ( VarDigit.Find(s.Mid(IinString+1,1)) != wxNOT_FOUND ) )
-            {
-                n++;
-                IinString++;
+        
+        while (IinString < s.Length()){
+            // Go to start of begin number
+            while ( _("0123456789.").find( s[IinString] ) == (size_t)wxNOT_FOUND )
+                if(IinString < s.Length()) IinString++; else break;
+            
+            wxString temp_s;
+            while ( _("0123456789.").find( s[IinString] ) != (size_t)wxNOT_FOUND ){             
+                if(IinString < s.Length()){
+                    temp_s.Append(s[IinString]);
+                    IinString++;                
+                }
+                    else break;
+            }  // temp_s contains now one number
+            if ( temp_s.find( _(".") ) != (size_t)wxNOT_FOUND ){ // floatingpoint number
+                double value;
+                if(!temp_s.ToDouble(&value)){ IsValidNumber = false; }
+                NoOfDecimals = std::max(NoOfDecimals, temp_s.Length()-temp_s.find( _(".") ) - 1 );
+                if ( (temp_s.Left(1) == _("0")) & (temp_s.find( _(".")) > 1) )
+                    NoOfDigits = std::max( NoOfDigits,  temp_s.find( _(".") ) );
+            } else{ //integer no
+                long value;
+                if(!temp_s.ToLong(&value)) { IsValidNumber = false; }
+                if ( temp_s.Left(1) == _("0") )
+                    NoOfDigits = std::max( NoOfDigits,  temp_s.Length() );
             }
-            if ( n > NoOfDecimals )
-                NoOfDecimals = n;
-        }
+        }    
+        
         wxString result;
         wxEcEngine calc;
         if (UseDegrees) calc.SetTrigonometricMode(wxECA_DEGREE);
         if (calc.SetFormula( formattokenarray[j] ))
         {
             result = wxString::Format(wxT("%.*f"), NoOfDecimals, calc.Compute() );
-            if (calc.GetLastError() == wxECE_NOERROR)
+            if (NoOfDigits){
+                printf("NoOfDigits = %d\n", (int)NoOfDigits);
+                wxString t(_("0000000000") );
+                t.Append(result);
+                result = t.Right(NoOfDecimals + 1 + NoOfDigits);
+            }
+            if ( (calc.GetLastError() == wxECE_NOERROR) & IsValidNumber )
             {
                  formattokenarray[j] = result;
-            }
+            }//else
+             //   formattokenarray[j] = _("#Error#");
         }
     }
     // finaly glue the seperate tokens back to one sentence
